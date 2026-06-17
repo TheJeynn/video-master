@@ -14,8 +14,19 @@ export class VideoController {
     { source: MediaElementAudioSourceNode; gain: GainNode }
   >();
 
+  // "Yapışkan" hız: kullanıcı bir kez seçince (örn. 1.50x) her yeni videoda
+  // (özellikle Shorts kaydırınca) otomatik uygulanır. 1 ise dokunulmaz.
+  private desiredRate = 1;
+  private watchedVideo: HTMLVideoElement | null = null;
+  private enforceHandler: (() => void) | null = null;
+
   setVideo(video: HTMLVideoElement | null): void {
-    this.video = video;
+    // DOMObserver kaba bir aday verir; kendi puanlamamızla (ekranda görünen +
+    // oynayan) doğru videoyu seçip onu izleriz. Böylece Shorts kaydırınca
+    // yapışkan hız her zaman doğru videoya uygulanır.
+    const best = this.resolveVideo() ?? video;
+    this.video = best;
+    if (best) this.watch(best);
   }
 
   getVideo(): HTMLVideoElement | null {
@@ -32,26 +43,67 @@ export class VideoController {
   speedUp(step: number, max: number): number | undefined {
     const video = this.resolveVideo();
     if (!video) return;
-    video.playbackRate = this.round(
-      Math.min(video.playbackRate + step, max)
-    );
-    return video.playbackRate;
+    // Hedef hızı baz al; videonun anlık değeri site tarafından sıfırlanmış olabilir.
+    const base = this.desiredRate !== 1 ? this.desiredRate : video.playbackRate;
+    this.desiredRate = this.round(Math.min(base + step, max));
+    this.applyRate(video);
+    return this.desiredRate;
   }
 
   speedDown(step: number, min: number): number | undefined {
     const video = this.resolveVideo();
     if (!video) return;
-    video.playbackRate = this.round(
-      Math.max(video.playbackRate - step, min)
-    );
-    return video.playbackRate;
+    const base = this.desiredRate !== 1 ? this.desiredRate : video.playbackRate;
+    this.desiredRate = this.round(Math.max(base - step, min));
+    this.applyRate(video);
+    return this.desiredRate;
   }
 
   resetSpeed(): number | undefined {
     const video = this.resolveVideo();
     if (!video) return;
-    video.playbackRate = 1;
+    this.desiredRate = 1;
+    this.applyRate(video);
     return 1;
+  }
+
+  // --- Yapışkan hız uygulama ----------------------------------------------
+
+  /** Hedef hızı videoya yazar ve o videoyu izlemeye alır (enforce için). */
+  private applyRate(video: HTMLVideoElement): void {
+    video.playbackRate = this.desiredRate;
+    this.watch(video);
+  }
+
+  /**
+   * Aktif videoya hız sıfırlamalarını yakalayan dinleyiciler bağlar. Site ya
+   * da YouTube hızı 1.0'a çekerse (örn. yeni bir Short'a geçince) hedef hız
+   * tekrar uygulanır. desiredRate 1 ise hiçbir şey yapılmaz (varsayılan davranış).
+   */
+  private watch(video: HTMLVideoElement): void {
+    if (this.watchedVideo === video) {
+      this.enforceRate(video);
+      return;
+    }
+    if (this.watchedVideo && this.enforceHandler) {
+      this.watchedVideo.removeEventListener("ratechange", this.enforceHandler);
+      this.watchedVideo.removeEventListener("play", this.enforceHandler);
+      this.watchedVideo.removeEventListener("loadeddata", this.enforceHandler);
+    }
+    this.watchedVideo = video;
+    this.enforceHandler = () => this.enforceRate(video);
+    video.addEventListener("ratechange", this.enforceHandler);
+    video.addEventListener("play", this.enforceHandler);
+    video.addEventListener("loadeddata", this.enforceHandler);
+    this.enforceRate(video);
+  }
+
+  /** Hedef hız 1 değilse ve video farklı bir hızdaysa, hedefi geri uygular. */
+  private enforceRate(video: HTMLVideoElement): void {
+    if (this.desiredRate === 1) return;
+    if (Math.abs(video.playbackRate - this.desiredRate) > 0.001) {
+      video.playbackRate = this.desiredRate;
+    }
   }
 
   // --- Time control -------------------------------------------------------
@@ -301,13 +353,9 @@ export class VideoController {
   // --- Helpers ------------------------------------------------------------
 
   private resolveVideo(): HTMLVideoElement | null {
-    const youtubeVideo = this.getYouTubeMainVideo();
-    if (youtubeVideo) {
-      this.video = youtubeVideo;
-      return youtubeVideo;
-    }
-
-    const videos = Array.from(document.querySelectorAll("video"));
+    const videos = Array.from(
+      document.querySelectorAll<HTMLVideoElement>("video")
+    );
     const best = this.pickBest(videos);
     if (best) {
       this.video = best;
@@ -321,40 +369,44 @@ export class VideoController {
     return null;
   }
 
-  private getYouTubeMainVideo(): HTMLVideoElement | null {
-    if (!location.hostname.includes("youtube.com")) return null;
-
-    const playerVideo = document.querySelector<HTMLVideoElement>(
-      "video.html5-main-video"
-    );
-    if (playerVideo && document.contains(playerVideo)) return playerVideo;
-
-    const moviePlayer = document.getElementById("movie_player");
-    const nestedVideo = moviePlayer?.querySelector<HTMLVideoElement>("video");
-    return nestedVideo && document.contains(nestedVideo) ? nestedVideo : null;
-  }
-
   private pickBest(videos: HTMLVideoElement[]): HTMLVideoElement | null {
     if (videos.length === 0) return null;
 
-    const visible = videos.filter((video) => this.isVideoVisible(video));
-    const candidates = visible.length > 0 ? visible : videos;
-    const playing = candidates.find(
-      (video) => !video.paused && !video.ended && video.readyState > 2
-    );
-    if (playing) return playing;
+    const viewportH = window.innerHeight || document.documentElement.clientHeight;
+    const viewportW = window.innerWidth || document.documentElement.clientWidth;
 
     let best: HTMLVideoElement | null = null;
-    let bestArea = 0;
-    for (const video of candidates) {
+    let bestScore = -1;
+
+    for (const video of videos) {
+      if (!this.isVideoVisible(video)) continue;
+
       const rect = video.getBoundingClientRect();
       const area = rect.width * rect.height;
-      if (area > bestArea) {
-        bestArea = area;
+      const onScreen =
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.top < viewportH &&
+        rect.left < viewportW;
+      const playing = !video.paused && !video.ended && video.readyState > 2;
+
+      // Puanlama: oynayan video > ekrandaki video > en büyük alan.
+      // Böylece Shorts'taki gizli/duran arka plan oynatıcısı asla seçilmez.
+      let score = area;
+      if (onScreen) score += 1e7;
+      if (playing) score += 1e9;
+
+      if (score > bestScore) {
+        bestScore = score;
         best = video;
       }
     }
-    return best ?? candidates[0];
+
+    // Görünür hiçbiri yoksa, en azından sayfadaki bir videoyu döndür.
+    if (!best) {
+      best = videos.find((v) => document.contains(v)) ?? videos[0];
+    }
+    return best;
   }
 
   private isVideoVisible(video: HTMLVideoElement): boolean {
