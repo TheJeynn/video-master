@@ -301,13 +301,9 @@ export class VideoController {
   // --- Helpers ------------------------------------------------------------
 
   private resolveVideo(): HTMLVideoElement | null {
-    const youtubeVideo = this.getYouTubeMainVideo();
-    if (youtubeVideo) {
-      this.video = youtubeVideo;
-      return youtubeVideo;
-    }
-
-    const videos = Array.from(document.querySelectorAll("video"));
+    const videos = Array.from(
+      document.querySelectorAll<HTMLVideoElement>("video")
+    );
     const best = this.pickBest(videos);
     if (best) {
       this.video = best;
@@ -321,40 +317,44 @@ export class VideoController {
     return null;
   }
 
-  private getYouTubeMainVideo(): HTMLVideoElement | null {
-    if (!location.hostname.includes("youtube.com")) return null;
-
-    const playerVideo = document.querySelector<HTMLVideoElement>(
-      "video.html5-main-video"
-    );
-    if (playerVideo && document.contains(playerVideo)) return playerVideo;
-
-    const moviePlayer = document.getElementById("movie_player");
-    const nestedVideo = moviePlayer?.querySelector<HTMLVideoElement>("video");
-    return nestedVideo && document.contains(nestedVideo) ? nestedVideo : null;
-  }
-
   private pickBest(videos: HTMLVideoElement[]): HTMLVideoElement | null {
     if (videos.length === 0) return null;
 
-    const visible = videos.filter((video) => this.isVideoVisible(video));
-    const candidates = visible.length > 0 ? visible : videos;
-    const playing = candidates.find(
-      (video) => !video.paused && !video.ended && video.readyState > 2
-    );
-    if (playing) return playing;
+    const viewportH = window.innerHeight || document.documentElement.clientHeight;
+    const viewportW = window.innerWidth || document.documentElement.clientWidth;
 
     let best: HTMLVideoElement | null = null;
-    let bestArea = 0;
-    for (const video of candidates) {
+    let bestScore = -1;
+
+    for (const video of videos) {
+      if (!this.isVideoVisible(video)) continue;
+
       const rect = video.getBoundingClientRect();
       const area = rect.width * rect.height;
-      if (area > bestArea) {
-        bestArea = area;
+      const onScreen =
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.top < viewportH &&
+        rect.left < viewportW;
+      const playing = !video.paused && !video.ended && video.readyState > 2;
+
+      // Puanlama: oynayan video > ekrandaki video > en büyük alan.
+      // Böylece Shorts'taki gizli/duran arka plan oynatıcısı asla seçilmez.
+      let score = area;
+      if (onScreen) score += 1e7;
+      if (playing) score += 1e9;
+
+      if (score > bestScore) {
+        bestScore = score;
         best = video;
       }
     }
-    return best ?? candidates[0];
+
+    // Görünür hiçbiri yoksa, en azından sayfadaki bir videoyu döndür.
+    if (!best) {
+      best = videos.find((v) => document.contains(v)) ?? videos[0];
+    }
+    return best;
   }
 
   private isVideoVisible(video: HTMLVideoElement): boolean {
