@@ -19,6 +19,124 @@ export class VideoController {
   private desiredRate = 1;
   private watchedVideo: HTMLVideoElement | null = null;
   private enforceHandler: (() => void) | null = null;
+  private rateTimer: number | null = null;
+  private static readonly STORAGE_KEY = "videoMaster.desiredRate";
+  private static readonly RETRY_INTERVAL_MS = 200;
+  private static readonly RETRY_WINDOW_MS = 10000;
+
+  /**
+   * Kayıtlı hedef hızı yükler ve periyodik zorlama döngüsünü başlatır.
+   * content script açılışında bir kez çağrılır.
+   */
+  async init(): Promise<void> {
+    this.desiredRate = this.readLocalRate() ?? this.desiredRate;
+
+    try {
+      const stored = await chrome.storage.local.get(VideoController.STORAGE_KEY);
+      const rate = stored?.[VideoController.STORAGE_KEY];
+      if (this.isValidRate(rate)) {
+        this.desiredRate = rate;
+        this.writeLocalRate(rate);
+      }
+    } catch {
+      /* storage erişilemezse varsayılan 1 kalır */
+    }
+    this.watchStoredRateChanges();
+    this.startEnforcementLoop();
+  }
+
+  /**
+   * Saniyede bir aktif videoyu kontrol edip hedef hıza çeker. Olay
+   * dinleyicileri (ratechange/loadeddata) ıskaladığında devreye giren güvenlik
+   * ağıdır: yeni bir video 1.0'da doğsa bile kısa sürede hedefe geçer.
+   * desiredRate 1 iken hiçbir şey yapmaz.
+   */
+  private startEnforcementLoop(): void {
+    if (this.rateTimer !== null) return;
+    this.rateTimer = window.setInterval(() => {
+      if (this.desiredRate === 1) return;
+      const video = this.resolveVideo();
+      if (video) {
+        this.watch(video);
+        this.enforceRate(video);
+      }
+    }, 500);
+  }
+
+  private persistRate(): void {
+    this.writeLocalRate(this.desiredRate);
+    try {
+      void chrome.storage.local.set({
+        [VideoController.STORAGE_KEY]: this.desiredRate,
+      });
+    } catch {
+      /* yok say */
+    }
+  }
+
+  /**
+   * Hedef hızı kısa aralıklarla birkaç kez yeniden uygular. YouTube ana
+   * sayfadan videoya geçerken YENİ bir <video> elementi yaratır ve bu element
+   * gecikmeli gelebilir; tek seferlik uygulama ıskalayabilir. 10 sn boyunca
+   * deneyerek yeni elemente hedef hızı garanti uygular.
+   */
+  reapplyRateWithRetries(): void {
+    if (this.desiredRate === 1) return;
+    const startedAt = Date.now();
+    let tries = 0;
+    const tick = () => {
+      const video = this.resolveVideo();
+      if (video) {
+        this.watch(video);
+        this.enforceRate(video);
+      }
+      tries += 1;
+      if (Date.now() - startedAt < VideoController.RETRY_WINDOW_MS) {
+        const delay = tries < 10 ? VideoController.RETRY_INTERVAL_MS : 500;
+        window.setTimeout(tick, delay);
+      }
+    };
+    tick();
+  }
+
+  private watchStoredRateChanges(): void {
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+        const change = changes[VideoController.STORAGE_KEY];
+        if (!change || !this.isValidRate(change.newValue)) return;
+
+        this.desiredRate = change.newValue;
+        this.writeLocalRate(this.desiredRate);
+        this.reapplyRateWithRetries();
+      });
+    } catch {
+      /* yok say */
+    }
+  }
+
+  private readLocalRate(): number | null {
+    try {
+      const raw = window.localStorage.getItem(VideoController.STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = Number(raw);
+      return this.isValidRate(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeLocalRate(rate: number): void {
+    try {
+      window.localStorage.setItem(VideoController.STORAGE_KEY, String(rate));
+    } catch {
+      /* yok say */
+    }
+  }
+
+  private isValidRate(rate: unknown): rate is number {
+    return typeof rate === "number" && Number.isFinite(rate) && rate > 0;
+  }
 
   setVideo(video: HTMLVideoElement | null): void {
     // DOMObserver kaba bir aday verir; kendi puanlamamızla (ekranda görünen +
@@ -47,6 +165,7 @@ export class VideoController {
     const base = this.desiredRate !== 1 ? this.desiredRate : video.playbackRate;
     this.desiredRate = this.round(Math.min(base + step, max));
     this.applyRate(video);
+    this.persistRate();
     return this.desiredRate;
   }
 
@@ -56,6 +175,7 @@ export class VideoController {
     const base = this.desiredRate !== 1 ? this.desiredRate : video.playbackRate;
     this.desiredRate = this.round(Math.max(base - step, min));
     this.applyRate(video);
+    this.persistRate();
     return this.desiredRate;
   }
 
@@ -64,6 +184,7 @@ export class VideoController {
     if (!video) return;
     this.desiredRate = 1;
     this.applyRate(video);
+    this.persistRate();
     return 1;
   }
 

@@ -16,8 +16,28 @@ import { Config } from "./types";
   });
 
   const controller = new VideoController();
+  await controller.init();
   const observer = new DOMObserver((video) => controller.setVideo(video));
   observer.start();
+
+  // YouTube SPA navigasyonu (ana sayfa->video, önerilen->video, arama->video)
+  // tamamlandığında hedef hızı yeni video elementine yeniden uygula.
+  // yt-navigate-finish YouTube'un kendi olayıdır ve her geçişte tetiklenir.
+  if (location.hostname.includes("youtube.com")) {
+    const reapplyRate = () => {
+      controller.reapplyRateWithRetries();
+    };
+
+    document.addEventListener("yt-navigate-start", reapplyRate);
+    document.addEventListener("yt-navigate-finish", reapplyRate);
+    document.addEventListener("yt-page-data-updated", reapplyRate);
+    document.addEventListener("yt-player-updated", reapplyRate);
+    window.addEventListener("popstate", reapplyRate);
+    window.addEventListener("pageshow", reapplyRate);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) reapplyRate();
+    });
+  }
 
   // --- On-screen feedback (toast) ----------------------------------------
 
@@ -144,5 +164,7 @@ import { Config } from "./types";
 
   inputHandler.attach();
 
-  console.info("[VideoMaster] Loaded. Open a video and use the shortcuts.");
+  console.info(
+    "[VideoMaster] v1.3 yüklendi — yapışkan hız + YouTube navigasyon kancası aktif."
+  );
 })();
