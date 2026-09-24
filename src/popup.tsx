@@ -67,6 +67,7 @@ function App() {
       keys: { ...config.keys, ...(patch.keys ?? {}) },
       limits: { ...config.limits, ...(patch.limits ?? {}) },
       steps: { ...config.steps, ...(patch.steps ?? {}) },
+      hideSpeedFromSite: patch.hideSpeedFromSite ?? config.hideSpeedFromSite,
     };
     setConfig(next);
     void configManager.save(next);
@@ -153,6 +154,16 @@ function App() {
           (n) => update({ steps: { ...config.steps, skip: n } }),
           1
         )}
+      </div>
+
+      <div className="section-label">Privacy</div>
+      <div className="row">
+        <span className="name">Hide speed from site (site sees 1x)</span>
+        <input
+          type="checkbox"
+          checked={config.hideSpeedFromSite}
+          onChange={(e) => update({ hideSpeedFromSite: e.target.checked })}
+        />
       </div>
 
       <div className="footer">

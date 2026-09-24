@@ -30,4 +30,5 @@ export interface Config {
   keys: KeyConfig;
   limits: Limits;
   steps: Steps;
+  hideSpeedFromSite: boolean; // Report 1x to the site's own JS while playing faster
 }

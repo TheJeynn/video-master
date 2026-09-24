@@ -23,6 +23,14 @@ export class VideoController {
   private static readonly STORAGE_KEY = "videoMaster.desiredRate";
   private static readonly RETRY_INTERVAL_MS = 200;
   private static readonly RETRY_WINDOW_MS = 10000;
+  private static readonly RATE_CHANNEL = "video-master:rate";
+  private static readonly ID_ATTR = "data-vm-id";
+
+  // Sitenin kendi JS'inin playbackRate okumasını 1x görecek şekilde
+  // gizlemek isteyip istemediğimiz. rateSpoof.ts (MAIN world) bu mesajları
+  // dinler; kapalıyken hiçbir postMessage gönderilmez.
+  private spoofEnabled = true;
+  private idCounter = 0;
 
   /**
    * Kayıtlı hedef hızı yükler ve periyodik zorlama döngüsünü başlatır.
@@ -138,6 +146,17 @@ export class VideoController {
     return typeof rate === "number" && Number.isFinite(rate) && rate > 0;
   }
 
+  /** Sitenin gerçek hızı görüp göremeyeceğini belirler (popup'tan değiştirilebilir). */
+  setSpoofEnabled(enabled: boolean): void {
+    if (this.spoofEnabled === enabled) return;
+    this.spoofEnabled = enabled;
+    if (!enabled && this.watchedVideo) {
+      this.releaseSpoof(this.watchedVideo);
+    } else if (enabled && this.watchedVideo && this.desiredRate !== 1) {
+      this.applySpoof(this.watchedVideo, this.desiredRate);
+    }
+  }
+
   setVideo(video: HTMLVideoElement | null): void {
     // DOMObserver kaba bir aday verir; kendi puanlamamızla (ekranda görünen +
     // oynayan) doğru videoyu seçip onu izleriz. Böylece Shorts kaydırınca
@@ -193,7 +212,57 @@ export class VideoController {
   /** Hedef hızı videoya yazar ve o videoyu izlemeye alır (enforce için). */
   private applyRate(video: HTMLVideoElement): void {
     video.playbackRate = this.desiredRate;
+    if (this.desiredRate === 1) {
+      this.releaseSpoof(video);
+    } else {
+      this.applySpoof(video, this.desiredRate);
+    }
     this.watch(video);
+  }
+
+  // --- Site'dan hız gizleme (MAIN world'e mesaj) --------------------------
+
+  private ensureId(video: HTMLVideoElement): string {
+    let id = video.getAttribute(VideoController.ID_ATTR);
+    if (!id) {
+      id = `vm-${Date.now().toString(36)}-${(this.idCounter++).toString(36)}`;
+      video.setAttribute(VideoController.ID_ATTR, id);
+    }
+    return id;
+  }
+
+  /**
+   * MAIN world'deki rateSpoof.ts'e "bu videoda gerçek hız X ama sayfaya 1
+   * göster" der. Sadece playbackRate property'sini gizler; currentTime/wall
+   * clock karşılaştırması yapan siteler gerçek hızı yine fark edebilir.
+   */
+  private applySpoof(video: HTMLVideoElement, realRate: number): void {
+    if (!this.spoofEnabled) return;
+    const id = this.ensureId(video);
+    window.postMessage(
+      {
+        channel: VideoController.RATE_CHANNEL,
+        action: "lock",
+        id,
+        realRate,
+        fakeRate: 1,
+      },
+      "*"
+    );
+  }
+
+  private releaseSpoof(video: HTMLVideoElement): void {
+    const id = video.getAttribute(VideoController.ID_ATTR);
+    if (!id) return;
+    window.postMessage(
+      {
+        channel: VideoController.RATE_CHANNEL,
+        action: "unlock",
+        id,
+        realRate: 1,
+      },
+      "*"
+    );
   }
 
   /**
@@ -225,6 +294,7 @@ export class VideoController {
     if (Math.abs(video.playbackRate - this.desiredRate) > 0.001) {
       video.playbackRate = this.desiredRate;
     }
+    this.applySpoof(video, this.desiredRate);
   }
 
   // --- Time control -------------------------------------------------------

@@ -27,6 +27,7 @@ export const DEFAULT_CONFIG: Config = {
     skip: 10,
     gain: 0.1,
   },
+  hideSpeedFromSite: true,
 };
 
 /**
@@ -84,6 +85,7 @@ export class ConfigManager {
       keys,
       limits: { ...base.limits, ...(override.limits ?? {}) },
       steps: { ...base.steps, ...(override.steps ?? {}) },
+      hideSpeedFromSite: override.hideSpeedFromSite ?? base.hideSpeedFromSite,
     };
   }
 }

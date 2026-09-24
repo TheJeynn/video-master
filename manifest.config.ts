@@ -29,6 +29,13 @@ export default defineManifest({
   content_scripts: [
     {
       matches: ["<all_urls>"],
+      js: ["src/inject/rateSpoof.ts"],
+      run_at: "document_start",
+      all_frames: true,
+      world: "MAIN",
+    },
+    {
+      matches: ["<all_urls>"],
       js: ["src/content.ts"],
       run_at: "document_idle",
       all_frames: true,

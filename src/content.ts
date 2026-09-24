@@ -11,11 +11,14 @@ import { Config } from "./types";
 (async function main(): Promise<void> {
   const configManager = new ConfigManager();
   let config: Config = await configManager.load();
-  configManager.onChange((updated) => {
-    config = updated;
-  });
 
   const controller = new VideoController();
+  controller.setSpoofEnabled(config.hideSpeedFromSite);
+  configManager.onChange((updated) => {
+    config = updated;
+    controller.setSpoofEnabled(updated.hideSpeedFromSite);
+  });
+
   await controller.init();
   const observer = new DOMObserver((video) => controller.setVideo(video));
   observer.start();
